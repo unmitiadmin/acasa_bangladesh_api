@@ -13,7 +13,7 @@ from api_analytics.exceptions import AnalyticsDataException
 
 
 
-app = FastAPI(root_path="/acasa_srilanka_api")
+app = FastAPI(root_path="/acasa_bangladesh_api")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
