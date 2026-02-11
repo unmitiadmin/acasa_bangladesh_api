@@ -4,6 +4,7 @@ from rasterio.mask import mask
 from rasterio.io import MemoryFile
 from rasterio.enums import Resampling
 import numpy as np
+from matplotlib import cm, colors
 from matplotlib.colors import to_rgba
 from io import BytesIO
 import json
@@ -20,6 +21,7 @@ class GeoProc:
         self.tif_data_dir = Path(env.get("DATA_ROOT_DIR"))
         self.admin_level = kwargs.get("admin_level")
         self.admin_level_id = kwargs.get("admin_level_id")
+        self.intensity_metric_id = kwargs.get("intensity_metric_id")
         self.raster_layer = kwargs.get("layer")
         self.geojson_index = {
             "total": "sa_outline.geojson",
@@ -121,6 +123,14 @@ class GeoProc:
         return BytesIO(memfile.read())
 
     def prep_geotiff(self):
+        if self.intensity_metric_id == 1:
+            # new continuous gradient for Intensity layers
+            return self._prep_gradient_geotiff()
+        
+        # fallback → old categorical version for Intensity frequency layers
+        return self._prep_discrete_geotiff()
+
+    def _prep_discrete_geotiff(self):
         result = self.handle_geotiff()
         masked_band = result["masked_band"]
         transform = result["transform"]
@@ -160,4 +170,46 @@ class GeoProc:
             dst.build_overviews([2, 4, 8, 16], Resampling.nearest)
             dst.update_tags(ns="rio_overview", resampling="nearest")
         # Return BytesIO-like object for StreamingResponse
+        return BytesIO(memfile.read())
+
+    def _prep_gradient_geotiff(self):
+        result = self.handle_geotiff()
+        masked_band = result["masked_band"]
+        transform = result["transform"]
+        meta = result["raster_meta"]
+        
+        data = masked_band.compressed().astype(float)
+        min_val, max_val = float(data.min()), float(data.max())
+
+        cmap = cm.get_cmap("RdYlGn")  
+        norm = colors.Normalize(vmin=min_val, vmax=max_val)
+
+        rgba = cmap(norm(masked_band.filled(np.nan)))
+        rgba = (rgba * 255).astype(np.uint8)
+
+        rgba[masked_band.mask] = [0, 0, 0, 0]
+
+        out_meta = meta.copy()
+        out_meta.update({
+            "count": 4,
+            "driver": "GTiff",
+            "dtype": "uint8",
+            "height": rgba.shape[0],
+            "width": rgba.shape[1],
+            "transform": transform,
+            "tiled": True,
+            "blockxsize": 256,
+            "blockysize": 256,
+            "compress": "deflate",
+            "interleave": "pixel",
+        })
+        out_meta.pop("nodata", None)
+
+        memfile = MemoryFile()
+        with memfile.open(**out_meta) as dst:
+            for i in range(4):
+                dst.write(rgba[:, :, i], i + 1)
+            dst.build_overviews([2, 4, 8, 16], Resampling.nearest)
+            dst.update_tags(ns="rio_overview", resampling="nearest")
+
         return BytesIO(memfile.read())

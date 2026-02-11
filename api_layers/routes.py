@@ -71,6 +71,7 @@ class LayerRouter:
             db=db,
             admin_level=request_body.get("admin_level"),
             admin_level_id=request_body.get("admin_level_id"),
+            intensity_metric_id=request_body.get("intensity_metric_id"),
             source_file=request_body.get("source_file"),
             color_ramp=request_body.get("color_ramp"),
         )
