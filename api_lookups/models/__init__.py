@@ -3,5 +3,6 @@ from .common import LkpAnalysisScope, LkpVisualizationScale, LkpCommodityType, L
     LkpDataSource, LkpClimateScenario, LkpIntensityMetric, LkpChangeMetric
 from .specific import LkpImpact, LkpImpactColor, \
     LkpRiskIpcc, LkpRisk, LkpRiskColor, LkpRiskCommoditySeason, \
-    LkpAdaptGroup, LkpAdaptCropColor, LkpAdaptCropOptcode, LkpAdaptLivestockColor, LkpAdapt
+    LkpAdaptGroup, LkpAdaptCropColor, LkpAdaptCropOptcode, LkpAdaptLivestockColor, \
+    LkpAdaptRegionalColor, LkpAdaptRegionalOptcode, LkpAdapt
 from .analytics import LkpAnalyticsScenario, LkpClimateDataModel, LkpAnalyticsParam

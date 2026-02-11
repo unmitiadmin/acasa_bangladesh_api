@@ -1,7 +1,8 @@
 import re
-from api_layers.models import TblAdaptCropData, TblAdaptLivestockData, TblImpactData
+from api_layers.models import TblAdaptCropData, TblAdaptLivestockData, TblImpactData, TblAdaptRegionalData
 from api_lookups.models import LkpCommodity, LkpClimateScenario, \
     LkpImpactColor, LkpAdapt, LkpAdaptCropColor, LkpAdaptLivestockColor, \
+    LkpAdaptRegionalColor, LkpAdaptRegionalOptcode, \
     LkpAdaptCropOptcode, LkpCountry, LkpState, LkpDistrict, LkpIntensityMetric, LkpChangeMetric
 from api_layers.exceptions import LayerDataException
 import pandas as pd
@@ -22,6 +23,7 @@ class AdaptationData:
         self.adaptation_croptab_id = kwargs.get("adaptation_croptab_id")
         self.commodity_id = kwargs.get("commodity_id")
         self.intensity_metric_id = 2 or kwargs.get("intensity_metric_id") # default to Intensity frequency
+        self.analysis_scope_id = kwargs.get("analysis_scope_id")
         self.visualization_scale_id = 1 or kwargs.get("visualization_scale_id") # default to PIXEL level
         self.climate_scenario_id = kwargs.get("climate_scenario_id")
         self.year = kwargs.get("year") if self.climate_scenario_id != 1 else None
@@ -52,64 +54,80 @@ class AdaptationData:
 
     def get_legend_categories(self):
         scenario = self.climate_scenario_obj.scenario
-        commodity = self.commodity_obj
-        if commodity.type.type == "Crops":
-            crop_cat_map = {
+        if self.analysis_scope_id == 1:
+            commodity = self.commodity_obj
+            if commodity.type.type == "Crops":
+                crop_cat_map = {
+                    "Land-climate suitability": ["Unsuitable\narea", "Low", "Medium", "High"],
+                    "Scalability": [*self.default_categories, "Unsuitable\narea"],
+                    "Gender suitability": ["Considerable\ndecrease", "Moderate\ndecrease", "No\nchange", "Moderate\nincrease", "Considerable\nincrease", "Unsuitable\narea"],
+                    "Female labourer suitability": ["Considerable\ndecrease", "Moderate\ndecrease", "No\nchange", "Moderate\nincrease", "Considerable\nincrease", "Unsuitable\narea"],
+                    "Female cultivator suitability": ["Considerable\ndecrease", "Moderate\ndecrease", "No\nchange", "Moderate\nincrease", "Considerable\nincrease", "Unsuitable\narea"],
+                    "Yield Benefits": ["Medium loss\n<-15%", "Low loss\n-15% to -5%", "Nil\n-5% to 5%", "Low gain\n5% to 15%", "Medium gain\n>15%", "Unsuitable\narea", "NA"],
+                    "Economic Viability": [*self.default_categories, "Unsuitable\narea", "NA"],
+                }
+                adap_croptab_obj = self.db.query(LkpAdaptCropColor).get(self.adaptation_croptab_id)
+                if adap_croptab_obj.tab_name == "Adaptation Benefits":
+                    return (
+                        self.get_impact_baseline_productivity_categories() if scenario == "Baseline"
+                        else ["Adaptation", "Revisit", "Maladaptation", "Ineffective", "Very High", "Unsuitable\narea", "NA"] # Very High to be excluded
+                    )
+                else:
+                    return crop_cat_map[adap_croptab_obj.tab_name]
+            elif commodity.type.type == "Livestock":
+                return ["Inapt", "Very Low", "Low", "Medium", "High"]
+        elif self.analysis_scope_id == 2:
+            region_cat_map = {
                 "Land-climate suitability": ["Unsuitable\narea", "Low", "Medium", "High"],
-                "Scalability": [*self.default_categories, "Unsuitable\narea"],
-                "Gender suitability": ["Considerable\ndecrease", "Moderate\ndecrease", "No\nchange", "Moderate\nincrease", "Considerable\nincrease", "Unsuitable\narea"],
-                "Female labourer suitability": ["Considerable\ndecrease", "Moderate\ndecrease", "No\nchange", "Moderate\nincrease", "Considerable\nincrease", "Unsuitable\narea"],
-                "Female cultivator suitability": ["Considerable\ndecrease", "Moderate\ndecrease", "No\nchange", "Moderate\nincrease", "Considerable\nincrease", "Unsuitable\narea"],
-                "Yield Benefits": ["Medium loss\n<-15%", "Low loss\n-15% to -5%", "Nil\n-5% to 5%", "Low gain\n5% to 15%", "Medium gain\n>15%", "Unsuitable\narea", "NA"],
-                "Economic Viability": [*self.default_categories, "Unsuitable\narea", "NA"],
             }
-            adap_croptab_obj = self.db.query(LkpAdaptCropColor).get(self.adaptation_croptab_id)
-            if adap_croptab_obj.tab_name == "Adaptation Benefits":
-                return (
-                    self.get_impact_baseline_productivity_categories() if scenario == "Baseline"
-                    else ["Adaptation", "Revisit", "Maladaptation", "Ineffective", "Very High", "Unsuitable\narea", "NA"] # Very High to be excluded
-                )
-            else:
-                return crop_cat_map[adap_croptab_obj.tab_name]
-        elif commodity.type.type == "Livestock":
-            return ["Inapt", "Very Low", "Low", "Medium", "High"]
+            adap_croptab_obj = self.db.query(LkpAdaptRegionalColor).get(self.adaptation_croptab_id)
+            return region_cat_map[adap_croptab_obj.tab_name]
 
     
 
     def get_legend_bgcolors(self):
-        scenario = self.climate_scenario_obj.scenario
-        commodity = self.commodity_obj
-        if commodity.type.type == "Crops":
-            adap_croptab_obj = self.db.query(LkpAdaptCropColor).get(self.adaptation_croptab_id)
-            crop_ramp = adap_croptab_obj.ramp
-            if adap_croptab_obj.tab_name in ["Yield Benefits", "Economic Viability", "Adaptation Benefits"]:
-                # Unsuitable area followed by NA
-                crop_ramp[-1], crop_ramp[-2] = crop_ramp[-2], crop_ramp[-1]
-            if adap_croptab_obj.tab_name == "Adaptation Benefits":
-                crop_ramp.insert(4, "#FFFFFF") # very high placeholder
-                return (
-                    self.db.query(LkpImpactColor).filter(LkpImpactColor.suffix == "Productivity_baseline").first().ramp 
-                    if scenario == "Baseline" else crop_ramp
-                )
-            else:
-                return crop_ramp
-        elif commodity.type.type == "Livestock":
-            livestock_color_obj = self.db.query(LkpAdaptLivestockColor).filter(LkpAdaptLivestockColor.suffix == self.adap_obj.optcode).first()
-            return livestock_color_obj.ramp
+        if self.analysis_scope_id == 1:
+            scenario = self.climate_scenario_obj.scenario
+            commodity = self.commodity_obj
+            if commodity.type.type == "Crops":
+                adap_croptab_obj = self.db.query(LkpAdaptCropColor).get(self.adaptation_croptab_id)
+                crop_ramp = adap_croptab_obj.ramp
+                if adap_croptab_obj.tab_name in ["Yield Benefits", "Economic Viability", "Adaptation Benefits"]:
+                    # Unsuitable area followed by NA
+                    crop_ramp[-1], crop_ramp[-2] = crop_ramp[-2], crop_ramp[-1]
+                if adap_croptab_obj.tab_name == "Adaptation Benefits":
+                    crop_ramp.insert(4, "#FFFFFF") # very high placeholder
+                    return (
+                        self.db.query(LkpImpactColor).filter(LkpImpactColor.suffix == "Productivity_baseline").first().ramp 
+                        if scenario == "Baseline" else crop_ramp
+                    )
+                else:
+                    return crop_ramp
+            elif commodity.type.type == "Livestock":
+                livestock_color_obj = self.db.query(LkpAdaptLivestockColor).filter(LkpAdaptLivestockColor.suffix == self.adap_obj.optcode).first()
+                return livestock_color_obj.ramp
+        elif self.analysis_scope_id == 2:
+            # As of Dec 2025 only Suitability (Land-climate) is available -- conditions to be added once other indicators are included
+            adap_croptab_obj = self.db.query(LkpAdaptRegionalColor).get(self.adaptation_croptab_id)
+            return adap_croptab_obj.ramp
     
 
     def get_legend_header(self):
-        scenario = self.climate_scenario_obj.scenario
-        commodity = self.commodity_obj
-        if commodity.type.type == "Crops":
-            adap_croptab_obj = self.db.query(LkpAdaptCropColor).get(self.adaptation_croptab_id)
-            return (
-                (f"Effectiveness of {self.adap_obj.adaptation}" if scenario != "Baseline" else "Yield (t/ha)") 
-                if adap_croptab_obj.tab_name == "Adaptation Benefits"
-                else f"Yield benefits due to {self.adap_obj.adaptation}" if adap_croptab_obj.tab_name == "Yield Benefits"
-                else f"{adap_croptab_obj.tab_name} for {self.adap_obj.adaptation}"
-            )
-        elif commodity.type.type == "Livestock":
+        if self.analysis_scope_id == 1:
+            scenario = self.climate_scenario_obj.scenario
+            commodity = self.commodity_obj
+            if commodity.type.type == "Crops":
+                adap_croptab_obj = self.db.query(LkpAdaptCropColor).get(self.adaptation_croptab_id)
+                return (
+                    (f"Effectiveness of {self.adap_obj.adaptation}" if scenario != "Baseline" else "Yield (t/ha)") 
+                    if adap_croptab_obj.tab_name == "Adaptation Benefits"
+                    else f"Yield benefits due to {self.adap_obj.adaptation}" if adap_croptab_obj.tab_name == "Yield Benefits"
+                    else f"{adap_croptab_obj.tab_name} for {self.adap_obj.adaptation}"
+                )
+            elif commodity.type.type == "Livestock":
+                return f"Suitability for {self.adap_obj.adaptation}"
+        elif self.analysis_scope_id == 2:
+            # As of Dec 2025 only Suitability (Land-climate) is available -- conditions to be added once other indicators are included
             return f"Suitability for {self.adap_obj.adaptation}"
         
 
@@ -121,65 +139,87 @@ class AdaptationData:
     
 
     def get_legend_values(self):
-        if self.commodity_obj.type.type == "Crops":
-            # get adaptation_croptab_id from LkpAdaptCropColor (self.adaptation_croptab_id)
-            # get adaptation_optcode_id from LkpAdaptCropOptcode (csufx_obj)
-            adap_croptab_obj = self.db.query(LkpAdaptCropColor).get(self.adaptation_croptab_id)
-            scenario = self.climate_scenario_obj.scenario
-            if adap_croptab_obj.tab_name == "Adaptation Benefits" and scenario == "Baseline":
+        if self.analysis_scope_id == 1:
+            if self.commodity_obj.type.type == "Crops":
+                # get adaptation_croptab_id from LkpAdaptCropColor (self.adaptation_croptab_id)
+                # get adaptation_optcode_id from LkpAdaptCropOptcode (csufx_obj)
+                adap_croptab_obj = self.db.query(LkpAdaptCropColor).get(self.adaptation_croptab_id)
+                scenario = self.climate_scenario_obj.scenario
+                if adap_croptab_obj.tab_name == "Adaptation Benefits" and scenario == "Baseline":
+                    filters = [
+                        TblImpactData.commodity_id == self.commodity_id,
+                        TblImpactData.intensity_metric_id == self.intensity_metric_id,
+                        TblImpactData.visualization_scale_id == self.visualization_scale_id,
+                        TblImpactData.climate_scenario_id == self.climate_scenario_id,
+                        TblImpactData.year == self.year,
+                        TblImpactData.change_metric_id == self.change_metric_id,
+                        TblImpactData.country_id == self.country_id,
+                        TblImpactData.state_id == self.state_id,
+                        TblImpactData.district_id == self.district_id,
+                        TblImpactData.impact_optcode_id == 1, # Productivity X Baseline - one-off exemption
+                    ]
+                    map_data = self.db.query(TblImpactData).filter(*filters).first()
+                    layer_type, layer_id = "impact", 1
+                else:
+                    csufx_obj = self.db.query(LkpAdaptCropOptcode).filter(LkpAdaptCropOptcode.optcode == self.adap_obj.optcode).first()
+                    filters = [
+                        TblAdaptCropData.commodity_id == self.commodity_id,
+                        TblAdaptCropData.intensity_metric_id == self.intensity_metric_id,
+                        TblAdaptCropData.visualization_scale_id == self.visualization_scale_id,
+                        TblAdaptCropData.climate_scenario_id == self.climate_scenario_id,
+                        TblAdaptCropData.year == self.year,
+                        TblAdaptCropData.change_metric_id == self.change_metric_id,
+                        TblAdaptCropData.country_id == self.country_id,
+                        TblAdaptCropData.state_id == self.state_id,
+                        TblAdaptCropData.district_id == self.district_id,
+                        TblAdaptCropData.adaptation_prefix_id == self.adaptation_croptab_id,
+                        TblAdaptCropData.adaptation_optcode_id == csufx_obj.id
+                    ]
+                    map_data = self.db.query(TblAdaptCropData).filter(*filters).first()
+                    layer_type, layer_id = "adaptation", self.layer_id
+            elif self.commodity_obj.type.type == "Livestock":
+                # get adaptation_optcode_id from LkpAdaptLivestockColor (lsufx_obj)
+                lsufx_obj = self.db.query(LkpAdaptLivestockColor).filter(LkpAdaptLivestockColor.suffix == self.adap_obj.optcode).first()
                 filters = [
-                    TblImpactData.commodity_id == self.commodity_id,
-                    TblImpactData.intensity_metric_id == self.intensity_metric_id,
-                    TblImpactData.visualization_scale_id == self.visualization_scale_id,
-                    TblImpactData.climate_scenario_id == self.climate_scenario_id,
-                    TblImpactData.year == self.year,
-                    TblImpactData.change_metric_id == self.change_metric_id,
-                    TblImpactData.country_id == self.country_id,
-                    TblImpactData.state_id == self.state_id,
-                    TblImpactData.district_id == self.district_id,
-                    TblImpactData.impact_optcode_id == 1, # Productivity X Baseline - one-off exemption
+                    TblAdaptLivestockData.commodity_id == self.commodity_id,
+                    TblAdaptLivestockData.intensity_metric_id == self.intensity_metric_id,
+                    TblAdaptLivestockData.visualization_scale_id == self.visualization_scale_id,
+                    TblAdaptLivestockData.climate_scenario_id == self.climate_scenario_id,
+                    TblAdaptLivestockData.year == self.year,
+                    TblAdaptLivestockData.change_metric_id == self.change_metric_id,
+                    TblAdaptLivestockData.country_id == self.country_id,
+                    TblAdaptLivestockData.state_id == self.state_id,
+                    TblAdaptLivestockData.district_id == self.district_id,
+                    TblAdaptLivestockData.adaptation_optcode_id == lsufx_obj.id
                 ]
-                map_data = self.db.query(TblImpactData).filter(*filters).first()
-                layer_type, layer_id = "impact", 1
-            else:
-                csufx_obj = self.db.query(LkpAdaptCropOptcode).filter(LkpAdaptCropOptcode.optcode == self.adap_obj.optcode).first()
-                filters = [
-                    TblAdaptCropData.commodity_id == self.commodity_id,
-                    TblAdaptCropData.intensity_metric_id == self.intensity_metric_id,
-                    TblAdaptCropData.visualization_scale_id == self.visualization_scale_id,
-                    TblAdaptCropData.climate_scenario_id == self.climate_scenario_id,
-                    TblAdaptCropData.year == self.year,
-                    TblAdaptCropData.change_metric_id == self.change_metric_id,
-                    TblAdaptCropData.country_id == self.country_id,
-                    TblAdaptCropData.state_id == self.state_id,
-                    TblAdaptCropData.district_id == self.district_id,
-                    TblAdaptCropData.adaptation_prefix_id == self.adaptation_croptab_id,
-                    TblAdaptCropData.adaptation_optcode_id == csufx_obj.id
-                ]
-                map_data = self.db.query(TblAdaptCropData).filter(*filters).first()
+                map_data = self.db.query(TblAdaptLivestockData).filter(*filters).first()
                 layer_type, layer_id = "adaptation", self.layer_id
-        elif self.commodity_obj.type.type == "Livestock":
-            # get adaptation_optcode_id from LkpAdaptLivestockColor (lsufx_obj)
-            lsufx_obj = self.db.query(LkpAdaptLivestockColor).filter(LkpAdaptLivestockColor.suffix == self.adap_obj.optcode).first()
+            return map_data, layer_type, layer_id
+        elif self.analysis_scope_id == 2:
+            # As of Dec 2025 only Suitability (Land-climate) is available -- conditions to be added once other indicators are included
+            adap_croptab_obj = self.db.query(LkpAdaptRegionalColor).get(self.adaptation_croptab_id)
+            csufx_obj = self.db.query(LkpAdaptRegionalOptcode).filter(LkpAdaptRegionalOptcode.optcode == self.adap_obj.optcode).first()
             filters = [
-                TblAdaptLivestockData.commodity_id == self.commodity_id,
-                TblAdaptLivestockData.intensity_metric_id == self.intensity_metric_id,
-                TblAdaptLivestockData.visualization_scale_id == self.visualization_scale_id,
-                TblAdaptLivestockData.climate_scenario_id == self.climate_scenario_id,
-                TblAdaptLivestockData.year == self.year,
-                TblAdaptLivestockData.change_metric_id == self.change_metric_id,
-                TblAdaptLivestockData.country_id == self.country_id,
-                TblAdaptLivestockData.state_id == self.state_id,
-                TblAdaptLivestockData.district_id == self.district_id,
-                TblAdaptLivestockData.adaptation_optcode_id == lsufx_obj.id
+                TblAdaptRegionalData.intensity_metric_id == self.intensity_metric_id,
+                TblAdaptRegionalData.visualization_scale_id == self.visualization_scale_id,
+                TblAdaptRegionalData.climate_scenario_id == self.climate_scenario_id,
+                TblAdaptRegionalData.year == self.year,
+                TblAdaptRegionalData.change_metric_id == self.change_metric_id,
+                TblAdaptRegionalData.country_id == self.country_id,
+                TblAdaptRegionalData.state_id == self.state_id,
+                TblAdaptRegionalData.district_id == self.district_id,
+                TblAdaptRegionalData.adaptation_prefix_id == self.adaptation_croptab_id,
+                TblAdaptRegionalData.adaptation_optcode_id == csufx_obj.id
             ]
-            map_data = self.db.query(TblAdaptLivestockData).filter(*filters).first()
+            map_data = self.db.query(TblAdaptRegionalData).filter(*filters).first()
             layer_type, layer_id = "adaptation", self.layer_id
-        return map_data, layer_type, layer_id
+            return map_data, layer_type, layer_id
 
     
     def get_legend(self):
-        if self.commodity_obj.type.type == "Crops" and not self.adaptation_croptab_id:
+        if self.analysis_scope_id == 2 and not self.adaptation_croptab_id:
+            raise LayerDataException("Please choose an appropriate adaptation indicator for regional analysis")
+        if self.analysis_scope_id == 1 and self.commodity_obj.type.type == "Crops" and not self.adaptation_croptab_id:
             raise LayerDataException("Please choose an appropriate adaptation indicator for the chosen crop")
         if self.climate_scenario_id != 1 and self.year not in [2050, 2080]:
             raise LayerDataException("Please choose the future year, for non baseline data")
@@ -198,15 +238,18 @@ class AdaptationData:
             "header_bold_part": self.adap_obj.adaptation,
             "footer_text": None,
         }
-        result["population_text"] = "Number of rural farm households"
+        result["population_text"] = "Number of rural farm households, million (M)"
         result["commodity_text"] = (
-            f"{self.commodity_obj.commodity} area, hectare (Ha)" if self.commodity_obj.type.type == "Crops"
-            else f"{self.commodity_obj.commodity}" if self.commodity_obj.type.type == "Livestock"
-            else None
+            (
+                f"{self.commodity_obj.commodity} area, million hectare (MHa)" if self.commodity_obj.type.type == "Crops"
+                else f"{self.commodity_obj.commodity}" if self.commodity_obj.type.type == "Livestock"
+                else None
+            ) if self.analysis_scope_id == 1
+            else f"Area under regional analysis, million hectare (Mha)"
         )
         result["legend"] = []
         scenario = self.climate_scenario_obj.scenario
-        adap_croptab_obj = self.db.query(LkpAdaptCropColor).get(self.adaptation_croptab_id)
+        
         for (i, n) in enumerate(categories):
             base_category = categories[i]
             legend_item = {
@@ -215,20 +258,28 @@ class AdaptationData:
                 "color": ramp[i],
                 "text_color": self.get_text_color(ramp[i]),
             }
-            if self.commodity_obj.type.type == "Crops":
-                crop_index = {
+            if self.analysis_scope_id == 1:
+                if self.commodity_obj.type.type == "Crops":
+                    adap_croptab_obj = self.db.query(LkpAdaptCropColor).get(self.adaptation_croptab_id)
+                    crop_index = {
+                        "Land-climate suitability": [0, 1, 2, 3],
+                        "Scalability": [0, 1, 2, 3, 4, 5],
+                        "Gender suitability": [0, 1, 2, 3, 4, 5],
+                        "Female labourer suitability": [0, 1, 2, 3, 4, 5],
+                        "Female cultivator suitability": [0, 1, 2, 3, 4, 5],
+                        "Yield Benefits": [0, 1, 2, 3, 4, 6, 5],
+                        "Economic Viability": [0, 1, 2, 3, 4, 6, 5],
+                        "Adaptation Benefits": [0, 1, 2, 3, 4] if scenario == "Baseline" else [0, 1, 2, 3, 5, 6] # Skipping Very High
+                    }
+                    val_index = crop_index[adap_croptab_obj.tab_name]
+                else:
+                    val_index = [0, 1, 2, 3, 4]
+            elif self.analysis_scope_id == 2:
+                region_index = {
                     "Land-climate suitability": [0, 1, 2, 3],
-                    "Scalability": [0, 1, 2, 3, 4, 5],
-                    "Gender suitability": [0, 1, 2, 3, 4, 5],
-                    "Female labourer suitability": [0, 1, 2, 3, 4, 5],
-                    "Female cultivator suitability": [0, 1, 2, 3, 4, 5],
-                    "Yield Benefits": [0, 1, 2, 3, 4, 6, 5],
-                    "Economic Viability": [0, 1, 2, 3, 4, 6, 5],
-                    "Adaptation Benefits": [0, 1, 2, 3, 4] if scenario == "Baseline" else [0, 1, 2, 3, 5, 6] # Skipping Very High
                 }
-                val_index = crop_index[adap_croptab_obj.tab_name]
-            else:
-                val_index = [0, 1, 2, 3, 4]
+                adap_croptab_obj = self.db.query(LkpAdaptRegionalColor).get(self.adaptation_croptab_id)
+                val_index = region_index[adap_croptab_obj.tab_name]
             if i in val_index:
                 commodity_value = getattr(map_data, self.commodity_fields[i]) if map_data else None
                 population_value = getattr(map_data, self.population_fields[i]) * 0.16 if map_data else None
@@ -237,7 +288,11 @@ class AdaptationData:
                     "population_value": population_value,
                 })
                 result["legend"].append(legend_item)
-        if self.commodity_obj.type.type == "Crops" and adap_croptab_obj.tab_name == "Adaptation Benefits" and scenario == "Baseline": # [6 - nil]
+        if (self.analysis_scope_id == 1 
+            and self.commodity_obj.type.type == "Crops" 
+            and adap_croptab_obj.tab_name == "Adaptation Benefits" 
+            and scenario == "Baseline"
+        ): # [6 - nil]
             result["legend"].append({
                 "base_category": "NA",
                 "named_category": "NA",
@@ -250,58 +305,73 @@ class AdaptationData:
 
 
     def get_table_values(self):
-        TblAdaptData = (
-            TblAdaptCropData if self.commodity_obj.type.type == "Crops"
-            else TblAdaptLivestockData # Livestock
-        )
-        if self.commodity_obj.type.type == "Crops":
-            adap_croptab_obj = self.db.query(LkpAdaptCropColor).get(self.adaptation_croptab_id)
-            scenario = self.climate_scenario_obj.scenario
-            if adap_croptab_obj.tab_name == "Adaptation Benefits" and scenario == "Baseline":
-                filters = [
-                    TblImpactData.commodity_id == self.commodity_id,
-                    TblImpactData.intensity_metric_id == self.intensity_metric_id,
-                    TblImpactData.visualization_scale_id == self.visualization_scale_id,
-                    TblImpactData.climate_scenario_id == self.climate_scenario_id,
-                    TblImpactData.year == self.year,
-                    TblImpactData.change_metric_id == self.change_metric_id,
-                    TblImpactData.impact_optcode_id == 1, # Productivity X Baseline - one-off exemption
-                ]
-                map_data = self.db.query(TblImpactData).filter(*filters)
-                TblAdaptData = TblImpactData
+        if self.analysis_scope_id == 1:
+            TblAdaptData = (
+                TblAdaptCropData if self.commodity_obj.type.type == "Crops"
+                else TblAdaptLivestockData # Livestock
+            )
+            if self.commodity_obj.type.type == "Crops":
+                adap_croptab_obj = self.db.query(LkpAdaptCropColor).get(self.adaptation_croptab_id)
+                scenario = self.climate_scenario_obj.scenario
+                if adap_croptab_obj.tab_name == "Adaptation Benefits" and scenario == "Baseline":
+                    filters = [
+                        TblImpactData.commodity_id == self.commodity_id,
+                        TblImpactData.intensity_metric_id == self.intensity_metric_id,
+                        TblImpactData.visualization_scale_id == self.visualization_scale_id,
+                        TblImpactData.climate_scenario_id == self.climate_scenario_id,
+                        TblImpactData.year == self.year,
+                        TblImpactData.change_metric_id == self.change_metric_id,
+                        TblImpactData.impact_optcode_id == 1, # Productivity X Baseline - one-off exemption
+                    ]
+                    map_data = self.db.query(TblImpactData).filter(*filters)
+                    TblAdaptData = TblImpactData
+                else:
+                    csufx_obj = self.db.query(LkpAdaptCropOptcode).filter(LkpAdaptCropOptcode.optcode == self.adap_obj.optcode).first()
+                    filters = [
+                        TblAdaptCropData.commodity_id == self.commodity_id,
+                        TblAdaptCropData.intensity_metric_id == self.intensity_metric_id,
+                        TblAdaptCropData.visualization_scale_id == self.visualization_scale_id,
+                        TblAdaptCropData.climate_scenario_id == self.climate_scenario_id,
+                        TblAdaptCropData.year == self.year,
+                        TblAdaptCropData.change_metric_id == self.change_metric_id,
+                        TblAdaptCropData.adaptation_prefix_id == self.adaptation_croptab_id,
+                        TblAdaptCropData.adaptation_optcode_id == csufx_obj.id
+                    ]
+                    map_data = self.db.query(TblAdaptCropData).filter(*filters)
+                    TblAdaptData = TblAdaptCropData
             else:
-                csufx_obj = self.db.query(LkpAdaptCropOptcode).filter(LkpAdaptCropOptcode.optcode == self.adap_obj.optcode).first()
+                lsufx_obj = self.db.query(LkpAdaptLivestockColor).filter(LkpAdaptLivestockColor.suffix == self.adap_obj.optcode).first()
                 filters = [
-                    TblAdaptCropData.commodity_id == self.commodity_id,
-                    TblAdaptCropData.intensity_metric_id == self.intensity_metric_id,
-                    TblAdaptCropData.visualization_scale_id == self.visualization_scale_id,
-                    TblAdaptCropData.climate_scenario_id == self.climate_scenario_id,
-                    TblAdaptCropData.year == self.year,
-                    TblAdaptCropData.change_metric_id == self.change_metric_id,
-                    TblAdaptCropData.adaptation_prefix_id == self.adaptation_croptab_id,
-                    TblAdaptCropData.adaptation_optcode_id == csufx_obj.id
+                    TblAdaptLivestockData.commodity_id == self.commodity_id,
+                    TblAdaptLivestockData.intensity_metric_id == self.intensity_metric_id,
+                    TblAdaptLivestockData.visualization_scale_id == self.visualization_scale_id,
+                    TblAdaptLivestockData.climate_scenario_id == self.climate_scenario_id,
+                    TblAdaptLivestockData.year == self.year,
+                    TblAdaptLivestockData.change_metric_id == self.change_metric_id,
+                    TblAdaptLivestockData.adaptation_optcode_id == lsufx_obj.id
                 ]
-                map_data = self.db.query(TblAdaptCropData).filter(*filters)
-                TblAdaptData = TblAdaptCropData
-        else:
-            lsufx_obj = self.db.query(LkpAdaptLivestockColor).filter(LkpAdaptLivestockColor.suffix == self.adap_obj.optcode).first()
+                map_data = self.db.query(TblAdaptLivestockData).filter(*filters)
+                TblAdaptData = TblAdaptLivestockData
+        elif self.analysis_scope_id == 2:
+            # As of Dec 2025 only Suitability (Land-climate) is available -- conditions to be added once other indicators are included
+            csufx_obj = self.db.query(LkpAdaptRegionalOptcode).filter(LkpAdaptRegionalOptcode.optcode == self.adap_obj.optcode).first()
             filters = [
-                TblAdaptLivestockData.commodity_id == self.commodity_id,
-                TblAdaptLivestockData.intensity_metric_id == self.intensity_metric_id,
-                TblAdaptLivestockData.visualization_scale_id == self.visualization_scale_id,
-                TblAdaptLivestockData.climate_scenario_id == self.climate_scenario_id,
-                TblAdaptLivestockData.year == self.year,
-                TblAdaptLivestockData.change_metric_id == self.change_metric_id,
-                TblAdaptLivestockData.adaptation_optcode_id == lsufx_obj.id
+                TblAdaptRegionalData.intensity_metric_id == self.intensity_metric_id,
+                TblAdaptRegionalData.visualization_scale_id == self.visualization_scale_id,
+                TblAdaptRegionalData.climate_scenario_id == self.climate_scenario_id,
+                TblAdaptRegionalData.year == self.year,
+                TblAdaptRegionalData.change_metric_id == self.change_metric_id,
+                TblAdaptRegionalData.adaptation_prefix_id == self.adaptation_croptab_id,
+                TblAdaptRegionalData.adaptation_optcode_id == csufx_obj.id
             ]
-            map_data = self.db.query(TblAdaptLivestockData).filter(*filters)
-            TblAdaptData = TblAdaptLivestockData
+            map_data = self.db.query(TblAdaptRegionalData).filter(*filters)
+            TblAdaptData = TblAdaptRegionalData
         if not map_data:
             raise LayerDataException("No data available for the selections")
         # Location fields
         if self.country_id is None and self.state_id is None and self.district_id is None:
-            # Sri Lanka
-            selected_location = "Sri Lanka"
+            # Bangladesh
+            selected_location = "Bangladesh"
             loc_filter = [TblAdaptData.state_id == None]
         if self.country_id is not None and self.state_id is None and self.district_id is None:
             # Country only - by states
@@ -321,42 +391,53 @@ class AdaptationData:
     
 
     def get_table(self):
-        if self.commodity_obj.type.type == "Crops" and not self.adaptation_croptab_id:
+        if self.analysis_scope_id == 2 and not self.adaptation_croptab_id:
+            raise LayerDataException("Please choose an appropriate adaptation indicator for regional analysis")
+        if self.analysis_scope_id == 1 and self.commodity_obj.type.type == "Crops" and not self.adaptation_croptab_id:
             raise LayerDataException("Please choose an appropriate adaptation indicator for the chosen crop")
         if self.climate_scenario_id != 1 and self.year not in [2050, 2080]:
             raise LayerDataException("Please choose the future year, for non baseline data")
         selected_location, map_data = self.get_table_values()
         rows = []
-
-        adap_croptab_obj = self.db.query(LkpAdaptCropColor).get(self.adaptation_croptab_id)
+        adap_croptab_obj = (
+            self.db.query(LkpAdaptCropColor).get(self.adaptation_croptab_id)
+            if self.analysis_scope_id == 1
+            else self.db.query(LkpAdaptRegionalColor).get(self.adaptation_croptab_id)
+        )
         scenario = self.climate_scenario_obj.scenario
-
         for row in map_data:
             base = {
-                "Commodity": row.commodity.commodity,
+                "Commodity": row.commodity.commodity if self.analysis_scope_id == 1 else "Regional",
                 "Model": row.intensity_metric.metric,
                 "Analysis Level": row.visualization_scale.scale,
                 "Scenario": row.climate_scenario.scenario,
                 "Year": row.year or "Baseline",
             }
-            if self.commodity_obj.type.type == "Crops":
-                if adap_croptab_obj.tab_name == "Adaptation Benefits" and scenario == "Baseline":
-                    base["Impact"] = row.impact_optcode.impact
-                else:
-                    base["Adaptation group"] = row.adaptation_prefix.prefix
-                    base["Adaptation"] = row.adaptation_optcode.optcode
-            elif self.commodity_obj.type.type == "Livestock":
-                base["Adaptation"] = row.adaptation_optcode.suffix
+            if self.analysis_scope_id == 1:
+                if self.commodity_obj.type.type == "Crops":
+                    if adap_croptab_obj.tab_name == "Adaptation Benefits" and scenario == "Baseline":
+                        base["Impact"] = row.impact_optcode.impact
+                    else:
+                        base["Adaptation group"] = row.adaptation_prefix.prefix
+                        base["Adaptation"] = row.adaptation_optcode.optcode
+                elif self.commodity_obj.type.type == "Livestock":
+                    base["Adaptation"] = row.adaptation_optcode.suffix
+            elif self.analysis_scope_id == 2:
+                base["Adaptation group"] = row.adaptation_prefix.prefix
+                base["Adaptation"] = row.adaptation_optcode.optcode
+
             base["Metric"] = row.change_metric.metric
             base["Country"] = row.country.country if row.country else "South Asia"
             base["State"] = row.state.state if row.state else ("Total Country" if row.country else "All countries")
+            base["District"] = row.district.district if row.district else ("Total State" if row.state else "Total Country")
             base["c_vlow"] = row.c_vlow
             base["c_low"] = row.c_low
             base["c_med"] = row.c_med
             base["c_high"] = row.c_high
             base["c_vhigh"] = row.c_vhigh
             if (
-                self.commodity_obj.type.type == "Crops" 
+                self.analysis_scope_id == 1
+                and self.commodity_obj.type.type == "Crops" 
                 and not(adap_croptab_obj.tab_name == "Adaptation Benefits" and scenario == "Baseline")
             ): base["c_uns"] = row.c_uns
             base["c_nil"] = row.c_nil
@@ -366,7 +447,8 @@ class AdaptationData:
             base["pop_high"] = row.pop_high
             base["pop_vhigh"] = row.pop_vhigh
             if (
-                self.commodity_obj.type.type == "Crops" 
+                self.analysis_scope_id == 1
+                and self.commodity_obj.type.type == "Crops" 
                 and not(adap_croptab_obj.tab_name == "Adaptation Benefits" and scenario == "Baseline")
             ): base["pop_uns"] = row.pop_uns
             base["pop_nil"] = row.pop_nil
@@ -382,31 +464,43 @@ class AdaptationData:
             "pop_uns": f"Rural population under Unsuitable area",
             "pop_nil": f"Rural population under Nil suitability",
         }, inplace=True)
-        commodity_name = self.commodity_obj.commodity
+        
         # Renaming commodity value header
-        if self.commodity_obj.type.type == "Crops":
+        if self.analysis_scope_id == 1:
+            commodity_name = self.commodity_obj.commodity
+            if self.commodity_obj.type.type == "Crops":
+                df.rename(columns={
+                    "c_vlow": f"Cropped area of {commodity_name} under Very Low suitability",
+                    "c_low": f"Cropped area of {commodity_name} under Low suitability",
+                    "c_med": f"Cropped area of {commodity_name} under Medium suitability",
+                    "c_high": f"Cropped area of {commodity_name} under High suitability",
+                    "c_vhigh": f"Cropped area of {commodity_name} under Very High suitability",
+                    "c_uns": f"Cropped area of {commodity_name} under Unsuitable area",
+                    "c_nil": f"Cropped area of {commodity_name} under Nil suitability",
+                }, inplace=True)
+            elif self.commodity_obj.type.type == "Livestock":
+                df.rename(columns={
+                    "c_vlow": f"Number of {commodity_name} under Very Low suitability",
+                    "c_low": f"Number of {commodity_name} under Low suitability",
+                    "c_med": f"Number of {commodity_name} under Medium suitability",
+                    "c_high": f"Number of {commodity_name} under High suitability",
+                    "c_vhigh": f"Number of {commodity_name} under Very High suitability",
+                    "c_uns": f"Number of {commodity_name} under Unsuitable area",
+                    "c_nil": f"Number of {commodity_name} under Nil suitability",
+                }, inplace=True)
+        elif self.analysis_scope_id == 2:
             df.rename(columns={
-                "c_vlow": f"Cropped area of {commodity_name} under Very Low suitability",
-                "c_low": f"Cropped area of {commodity_name} under Low suitability",
-                "c_med": f"Cropped area of {commodity_name} under Medium suitability",
-                "c_high": f"Cropped area of {commodity_name} under High suitability",
-                "c_vhigh": f"Cropped area of {commodity_name} under Very High suitability",
-                "c_uns": f"Cropped area of {commodity_name} under Unsuitable area",
-                "c_nil": f"Cropped area of {commodity_name} under Nil suitability",
-            }, inplace=True)
-        elif self.commodity_obj.type.type == "Livestock":
-            df.rename(columns={
-                "c_vlow": f"Number of {commodity_name} under Very Low suitability",
-                "c_low": f"Number of {commodity_name} under Low suitability",
-                "c_med": f"Number of {commodity_name} under Medium suitability",
-                "c_high": f"Number of {commodity_name} under High suitability",
-                "c_vhigh": f"Number of {commodity_name} under Very High suitability",
-                "c_uns": f"Number of {commodity_name} under Unsuitable area",
-                "c_nil": f"Number of {commodity_name} under Nil suitability",
+                "c_vlow": f"Area under regional analysis under Very Low suitability",
+                "c_low": f"Area under regional analysis under Low suitability",
+                "c_med": f"Area under regional analysis under Medium suitability",
+                "c_high": f"Area under regional analysis under High suitability",
+                "c_vhigh": f"Area under regional analysis under Very High suitability",
+                "c_uns": f"Area under regional analysis under Unsuitable area",
+                "c_nil": f"Area under regional analysis under Nil suitability",
             }, inplace=True)
         # Save into in-memory file object
         filename = (
-            f"{self.commodity_obj.commodity}_"
+            f"{self.commodity_obj.commodity if self.analysis_scope_id == 1 else 'Regional'}_"
             f"{selected_location}_"
             f"{self.adap_obj.adaptation}_"
             f"{self.intensity_metric_obj.metric}_"
@@ -414,7 +508,11 @@ class AdaptationData:
             f"{f'{self.year}_{self.ucase(self.climate_scenario_obj.scenario)}' if self.year else 'Baseline'}"
         ).replace(" ", "_")
         memfile = BytesIO()
-        sheet_name = f"{self.commodity_obj.commodity}_{self.adap_obj.adaptation}".replace(" ", "_")
+        sheet_name = (
+            f"{self.commodity_obj.commodity}_{self.adap_obj.adaptation}".replace(" ", "_")
+            if self.analysis_scope_id == 1
+            else f"Regional_{self.adap_obj.adaptation}".replace(" ", "_")
+        )
         with pd.ExcelWriter(memfile, engine="openpyxl") as writer:
             df.to_excel(writer, index=False, sheet_name=sheet_name)
             worksheet = writer.sheets[sheet_name]

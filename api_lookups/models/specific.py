@@ -163,6 +163,28 @@ class LkpAdaptLivestockColor(Base):
     ramp: Mapped[Optional[dict]] = mapped_column(JSON)
     updated_on: Mapped[Optional[datetime.datetime]] = mapped_column(DateTime)
 
+class LkpAdaptRegionalColor(Base):
+    __tablename__ = 'lkp_adapt_regional_color'
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    tab_name: Mapped[str] = mapped_column(String(128))
+    prefix: Mapped[str] = mapped_column(String(128))
+    created_on: Mapped[datetime.datetime] = mapped_column(DateTime, server_default=text('CURRENT_TIMESTAMP'))
+    status: Mapped[int] = mapped_column(TINYINT, server_default=text("'1'"))
+    ramp: Mapped[Optional[dict]] = mapped_column(JSON)
+    updated_on: Mapped[Optional[datetime.datetime]] = mapped_column(DateTime)
+
+
+class LkpAdaptRegionalOptcode(Base):
+    __tablename__ = 'lkp_adapt_regional_optcode'
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    optcode: Mapped[str] = mapped_column(String(128))
+    created_on: Mapped[datetime.datetime] = mapped_column(DateTime, server_default=text('CURRENT_TIMESTAMP'))
+    status: Mapped[int] = mapped_column(TINYINT, server_default=text("'1'"))
+    description: Mapped[Optional[str]] = mapped_column(Text)
+    updated_on: Mapped[Optional[datetime.datetime]] = mapped_column(DateTime)
+
 
 class LkpAdapt(Base):
     __tablename__ = 'lkp_adapt'

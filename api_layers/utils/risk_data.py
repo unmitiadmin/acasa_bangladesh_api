@@ -177,8 +177,8 @@ class RiskData:
         if not map_data:
             raise LayerDataException("No data available for the selections")
         if self.country_id is None and self.state_id is None and self.district_id is None:
-            # Sri Lanka
-            selected_location = "Sri Lanka"
+            # Bangladesh
+            selected_location = "Bangladesh"
             loc_filter = [TblRiskData.state_id == None]
         if self.country_id is not None and self.state_id is None and self.district_id is None:
             # Country only - by states

@@ -31,7 +31,7 @@ class LayerRouter:
             # common options - left pane
             analysis_scope_id = request_body.get("analysis_scope_id"),
             visualization_scale_id = request_body.get("visualization_scale_id"),
-            commodity_id = request_body.get("commodity_id"),
+            commodity_id = request_body.get("commodity_id"), # keep None/NULL for regional
             data_source_id = request_body.get("data_source_id"),
             # specific options
             risk_id = request_body.get("risk_id"),

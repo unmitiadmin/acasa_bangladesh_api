@@ -4,7 +4,7 @@ from settings import env
 from api_lookups.models import (
     LkpAnalysisScope, LkpVisualizationScale, LkpCommodity, LkpDataSource, LkpClimateScenario,
     LkpImpact, LkpImpactColor, LkpRisk, LkpRiskColor, 
-    LkpAdaptCropColor, LkpAdaptLivestockColor, LkpAdapt,
+    LkpAdaptCropColor, LkpAdaptLivestockColor, LkpAdaptRegionalColor, LkpAdapt,
     LkpIntensityMetric, LkpChangeMetric # Currently specific only for hazards
 )
 from ..exceptions import LayerDataException
@@ -28,7 +28,10 @@ class TIFPicker:
         # Database-connector object
         self.db = kwargs.get("db")
         # Index objects - common options
-        self.commodity_obj = self.db.query(LkpCommodity).filter(LkpCommodity.id == self.commodity_id).first()
+        self.commodity_obj = (
+            self.db.query(LkpCommodity).filter(LkpCommodity.id == self.commodity_id).first()
+            if self.commodity_id else None
+        )
         self.data_source_obj = self.db.query(LkpDataSource).filter(LkpDataSource.id == self.data_source_id).first()
         self.analysis_scope_obj = self.db.query(LkpAnalysisScope).filter(LkpAnalysisScope.id == self.analysis_scope_id).first()
         self.visualization_scale_obj = self.db.query(LkpVisualizationScale).filter(LkpVisualizationScale.id == self.visualization_scale_id).first()        
@@ -43,24 +46,34 @@ class TIFPicker:
         }
         self.singular = lambda s: self.irregulars.get(s, self.p.singular_noun(s) or s)
  
-
     
     def pick_commodity_raster(self):
-        # Currently has only baseline (Jul 2025)
-        # public> Crop Masks > Extent > {activeCrop}.tif
         parent_folder = "Crop Masks/Extent"
-        common_color_ramp = ["#FFFFCC", "#FFE680", "#FFCC33", "#FF9933", "#CC6600"] # <---- change this if commodity specific ramp
+        common_color_ramp = ["#FFFFCC", "#FFE680", "#FFCC33", "#FF9933", "#CC6600"]
+
+        # Default: commodity-specific mask
+        source_filename = f"{self.commodity_obj.commodity}.tif"
+        mask_type = "commodity"
+
+        # Regional analysis overriden
+        if self.analysis_scope_id == 2:
+            source_filename = "Regional.tif"
+            mask_type = "regional"
+
+        source_path = Path(parent_folder) / source_filename
+        full_path = self.data_root_dir / source_path
+
         return {
             "level": self.visualization_scale_obj.scale,
             "commodity": f"{self.commodity_obj.commodity_group}: {self.commodity_obj.commodity}",
             "scenario": "Baseline",
             "model": self.data_source_obj.source,
-            "mask": "commodity",
+            "mask": mask_type,
             "raster_files": [{
                 "climate_scenario_id": 1,
                 "climate_scenario": "Baseline",
-                "source_file": (Path(parent_folder) / f"{self.commodity_obj.commodity}.tif").as_posix(),
-                "exists": Path.exists( self.data_root_dir / parent_folder / f"{self.commodity_obj.commodity}.tif"),
+                "source_file": source_path.as_posix(),
+                "exists": full_path.exists(),
                 "ramp": common_color_ramp,
             }]
         }
@@ -237,8 +250,12 @@ class TIFPicker:
         commodity_type_dict = {
             "Crops": self.pick_adapt_crop_raster,
             "Livestock": self.pick_adapt_livestock_raster,
+            "Regional": self.pick_adapt_regional_raster,
         }
-        return commodity_type_dict[self.commodity_obj.type.type]()
+        if self.analysis_scope_id == 1:
+            return commodity_type_dict[self.commodity_obj.type.type]()
+        else:
+            return commodity_type_dict["Regional"]()
     
 
     def pick_adapt_crop_raster(self):
@@ -410,13 +427,101 @@ class TIFPicker:
         }
 
 
+    def pick_adapt_regional_raster(self):
+        parent_folder = "Adap-final-struc"
+        commodity = "Regional" # Hardcode for non-commodity
+        scale = str(self.visualization_scale_obj.scale).split(" ")[0]
+        adap_obj = self.db.query(LkpAdapt).get(self.adaptation_id)
+        cpfx_obj = self.db.query(LkpAdaptRegionalColor).get(self.adaptation_croptab_id)
+        raster_file_index = []
+        intensity_metric_ids = [row.id for row in self.db.query(LkpIntensityMetric).filter(LkpIntensityMetric.status)]
+        change_metric_ids = [row.id for row in self.db.query(LkpChangeMetric).filter(LkpChangeMetric.status)]
+        # Baseline
+        for intensity_metric_id in intensity_metric_ids:
+            for change_metric_id in [change_metric_ids[0]]: # no delta for baseline
+                intensity_metric_obj = self.db.query(LkpIntensityMetric).filter(LkpIntensityMetric.id == intensity_metric_id).first()
+                change_metric_obj = self.db.query(LkpChangeMetric).filter(LkpChangeMetric.id == change_metric_id).first()
+                # FOLDERPATH: Regional/{Intensity|IntensityFrequency}/{District|Pixel}/Baseline/{abs|del}
+                baseline_intm_folder = f"{commodity}/{intensity_metric_obj.metric}/{scale}/Baseline/{change_metric_obj.p}"
+                # FILENAME EXAMPLE: Baseline_abs_Chicken_Vaccination.tif
+                # baseline_file = f"Baseline_{change_metric_obj.p}_{commodity}_{lsufx_obj.suffix}.tif"
+                baseline_file = f"{cpfx_obj.prefix}_{commodity}_{adap_obj.optcode}_baseline.tif"
+                raster_file_index.append({
+                    "layer_type": "adaptation",
+                    "layer_id": adap_obj.id,
+                    "year": None,
+                    "climate_scenario_id": 1,
+                    "intensity_metric_id": intensity_metric_id,
+                    "change_metric_id": change_metric_id,
+                    "climate_scenario": "Baseline",
+                    "intensity_metric": intensity_metric_obj.metric,
+                    "change_metric": change_metric_obj.metric,
+                    "source_file": (Path(parent_folder)/ baseline_intm_folder / baseline_file).as_posix(),
+                    "exists": Path.exists(self.data_root_dir / parent_folder / baseline_intm_folder / baseline_file),
+                    "ramp": cpfx_obj.ramp,
+                })
+        # Future scenarios
+        def append_non_baseline_adaptations(future, nonbaseline_scenario_id, intensity_metric_id, change_metric_id):
+            nonbaseline_scenario_obj = self.db.query(LkpClimateScenario).get(nonbaseline_scenario_id)
+            scenario_ucase = self.ucase(nonbaseline_scenario_obj.scenario)
+            scenario_lcase = self.lcase(nonbaseline_scenario_obj.scenario)
+            intensity_metric_obj = self.db.query(LkpIntensityMetric).filter(LkpIntensityMetric.id == intensity_metric_id).first()
+            change_metric_obj = self.db.query(LkpChangeMetric).filter(LkpChangeMetric.id == change_metric_id).first()
+            # FOLDERPATH: Regional/{Intensity|IntensityFrequency}/{District|Pixel}/{scenario_ucase}/{abs|del}
+            intm_folder = f"{commodity}/{intensity_metric_obj.metric}/{scale}/{scenario_ucase}/{change_metric_obj.p}"
+            # EXAMPLE FILENAME: 2050_SSP245_abs_Chicken_Adoption of climate resilient breeds.tif
+            # scenario_file = f"{future}_{scenario_ucase}_{change_metric_obj.p}_{commodity}_{lsufx_obj.suffix}.tif"
+            scenario_file = f"{cpfx_obj.prefix}_{commodity}_{adap_obj.optcode}_{future}_{scenario_lcase}.tif"
+            raster_file_index.append({
+                "layer_type": "adaptation",
+                "layer_id": adap_obj.id,
+                "year": future,
+                "climate_scenario_id": nonbaseline_scenario_id,
+                "intensity_metric_id": intensity_metric_id,
+                "change_metric_id": change_metric_id,
+                "climate_scenario": f"{nonbaseline_scenario_obj.scenario} | {future}s",
+                "intensity_metric": intensity_metric_obj.metric,
+                "change_metric": change_metric_obj.metric,
+                "source_file": (Path(parent_folder)/ intm_folder / scenario_file).as_posix(),
+                "exists": Path.exists(self.data_root_dir / parent_folder / intm_folder / scenario_file),
+                "ramp": cpfx_obj.ramp,
+            })
+        nonbaseline_scenario_ids = [row.id for row in self.db.query(LkpClimateScenario.id).filter(LkpClimateScenario.scenario != "Baseline").all()]
+        for future in [2050, 2080]:
+            for nonbaseline_scenario_id in nonbaseline_scenario_ids:
+                for intensity_metric_id in intensity_metric_ids:
+                    for change_metric_id in change_metric_ids:
+                        append_non_baseline_adaptations(future, nonbaseline_scenario_id, intensity_metric_id, change_metric_id)
+        return {
+            "level": self.visualization_scale_obj.scale,
+            "commodity": f"Regional Analysis",
+            "mask": f"{adap_obj.adaptation}",
+            "default_change_metric_id": 1,
+            "default_intensity_metric_id": 2,
+            "toggle_change_metric": False,
+            "toggle_intensity_metric": False,
+            "raster_files": raster_file_index
+        }
+
+
     def execute(self):
         if self.layer_type not in self.valid_layer_types:
             raise LayerDataException("Please ensure to choose one of Commodities/Risk/Impact/Adaptation options for viewing")
-        if (self.layer_type == "adaptation"and 
-            self.commodity_obj.type.type == "Crops" and 
-            not self.adaptation_croptab_id):
-            raise LayerDataException("Please choose an appropriate adaptation indicator for the chosen crop")
+        if self.layer_type == "adaptation":
+            if self.analysis_scope_id == 2:
+                # Regional adaptations REQUIRE croptab
+                if not self.adaptation_croptab_id:
+                    raise LayerDataException(
+                        "Please choose an appropriate adaptation indicator for the chosen regional analysis"
+                    )
+
+            elif self.commodity_obj.type.type == "Crops":
+                # Crop adaptations REQUIRE croptab
+                if not self.adaptation_croptab_id:
+                    raise LayerDataException(
+                        "Please choose an appropriate adaptation indicator for the chosen crop"
+                    )
+                # Livestock → no croptab required
         picker = {
             "commodity": self.pick_commodity_raster,
             "risk": self.pick_risk_raster,
